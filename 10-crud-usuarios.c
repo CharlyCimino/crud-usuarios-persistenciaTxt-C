@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+#include <direct.h>
+#include <errno.h>
+#include <windows.h>
 
 #define TIPO_STD "STD"
 #define TIPO_ADMIN "ADMIN"
@@ -26,6 +29,10 @@ typedef struct {
 #define CONSULTA 3
 #define MODIFICACION 4
 #define BAJA 5
+#define REPORTE 6
+#define CARPETA_REPORTES "reportes"
+#define ARCHIVO_REPORTE "usuarios-por-tipo.txt"
+#define CAPACIDAD_RUTA (MAX_PATH + sizeof(CARPETA_REPORTES) + sizeof(ARCHIVO_REPORTE) + 2)
 
 /* Descarta el resto de una linea para no contaminar la siguiente lectura. */
 void descartarRestoDeLinea(void) {
@@ -213,11 +220,87 @@ void eliminarUsuario(Usuario usuarios[], int *cantidad) {
         puts("Usuario eliminado.");
     }
 }
+int contarUsuariosPorTipo(const Usuario usuarios[], int cantidad, const char tipo[]) {
+    int cantidadPorTipo = 0;
+    int i;
+
+    for (i = 0; i < cantidad; i++) {
+        if (strcmp(usuarios[i].tipo, tipo) == 0) {
+            cantidadPorTipo++;
+        }
+    }
+
+    return cantidadPorTipo;
+}
+
+/* En Windows, obtiene la carpeta del .exe aunque se ejecute desde otra carpeta. */
+int prepararCarpetaReportes(char ruta[]) {
+    char *ultimaBarra;
+    DWORD longitud = GetModuleFileNameA(NULL, ruta, MAX_PATH);
+    int creada = 0;
+
+    if (longitud > 0 && longitud < MAX_PATH) {
+        ultimaBarra = strrchr(ruta, '\\');
+        if (ultimaBarra != NULL) {
+            ultimaBarra[1] = '\0';
+            strcat(ruta, CARPETA_REPORTES);
+            /* Si la carpeta ya existe, tambien podemos usarla. */
+            creada = _mkdir(ruta) == 0 || errno == EEXIST;
+        }
+    }
+
+    return creada;
+}
+
+int escribirReporteUsuarios(FILE *archivo, const Usuario usuarios[], int cantidad) {
+    int cantidadStd = contarUsuariosPorTipo(usuarios, cantidad, TIPO_STD);
+    int cantidadAdmin = contarUsuariosPorTipo(usuarios, cantidad, TIPO_ADMIN);
+    int escrito;
+
+    /* fprintf funciona como printf, pero escribe en el archivo indicado. */
+    escrito = fprintf(archivo,
+                      "REPORTE DE USUARIOS\n"
+                      "===================\n"
+                      "Total de usuarios: %d\n\n"
+                      "Cantidad por tipo:\n"
+                      "%s: %d\n"
+                      "%s: %d\n",
+                      cantidad, TIPO_STD, cantidadStd, TIPO_ADMIN, cantidadAdmin) >= 0;
+
+    return escrito;
+}
+
+void generarReporteUsuarios(const Usuario usuarios[], int cantidad) {
+    char ruta[CAPACIDAD_RUTA];
+    FILE *archivo;
+    int escrito;
+    int cerrado;
+
+    if (prepararCarpetaReportes(ruta)) {
+        strcat(ruta, "\\" ARCHIVO_REPORTE);
+        /* El modo "w" crea el archivo o reemplaza el reporte anterior. */
+        archivo = fopen(ruta, "w");
+        if (archivo != NULL) {
+            escrito = escribirReporteUsuarios(archivo, usuarios, cantidad);
+            cerrado = fclose(archivo) == 0;
+            if (escrito && cerrado) {
+                printf("Reporte generado en: %s\n", ruta);
+            } else {
+                puts("No se pudo completar la escritura del reporte.");
+            }
+        } else {
+            puts("No se pudo abrir el archivo de reporte.");
+        }
+    } else {
+        puts("No se pudo preparar la carpeta de reportes.");
+    }
+}
+
 void mostrarMenu(void) {
     puts("\n--- Usuarios ---");
     printf("%d. Alta\n%d. Listado\n%d. Consulta\n%d. Modificacion\n"
-           "%d. Baja\n%d. Salir\n", ALTA, LISTADO, CONSULTA,
-           MODIFICACION, BAJA, SALIR);
+           "%d. Baja\n%d. Generar reporte de usuarios\n%d. Salir\n", ALTA, LISTADO, CONSULTA,
+           MODIFICACION, BAJA, REPORTE, SALIR);
 }
 
 int main(void) {
@@ -227,7 +310,7 @@ int main(void) {
 
     do {
         mostrarMenu();
-        opcion = leerEnteroEntre(SALIR, BAJA, "Opcion");
+        opcion = leerEnteroEntre(SALIR, REPORTE, "Opcion");
         switch (opcion) {
             case ALTA:
                 agregarUsuario(usuarios, &cantidad);
@@ -243,6 +326,9 @@ int main(void) {
                 break;
             case BAJA:
                 eliminarUsuario(usuarios, &cantidad);
+                break;
+            case REPORTE:
+                generarReporteUsuarios(usuarios, cantidad);
                 break;
         }
     } while (opcion != SALIR);
