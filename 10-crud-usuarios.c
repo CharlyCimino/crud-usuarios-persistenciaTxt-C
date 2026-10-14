@@ -30,6 +30,7 @@ typedef struct {
 #define MODIFICACION 4
 #define BAJA 5
 #define REPORTE 6
+#define VER_REPORTE 7
 #define CARPETA_REPORTES "reportes"
 #define ARCHIVO_REPORTE "usuarios-por-tipo.txt"
 #define CAPACIDAD_RUTA (MAX_PATH + sizeof(CARPETA_REPORTES) + sizeof(ARCHIVO_REPORTE) + 2)
@@ -234,19 +235,29 @@ int contarUsuariosPorTipo(const Usuario usuarios[], int cantidad, const char tip
 }
 
 /* En Windows, obtiene la carpeta del .exe aunque se ejecute desde otra carpeta. */
-int prepararCarpetaReportes(char ruta[]) {
+int obtenerCarpetaReportes(char ruta[]) {
     char *ultimaBarra;
     DWORD longitud = GetModuleFileNameA(NULL, ruta, MAX_PATH);
-    int creada = 0;
+    int obtenida = 0;
 
     if (longitud > 0 && longitud < MAX_PATH) {
         ultimaBarra = strrchr(ruta, '\\');
         if (ultimaBarra != NULL) {
             ultimaBarra[1] = '\0';
             strcat(ruta, CARPETA_REPORTES);
-            /* Si la carpeta ya existe, tambien podemos usarla. */
-            creada = _mkdir(ruta) == 0 || errno == EEXIST;
+            obtenida = 1;
         }
+    }
+
+    return obtenida;
+}
+
+int prepararCarpetaReportes(char ruta[]) {
+    int creada = 0;
+
+    if (obtenerCarpetaReportes(ruta)) {
+        /* Si la carpeta ya existe, tambien podemos usarla. */
+        creada = _mkdir(ruta) == 0 || errno == EEXIST;
     }
 
     return creada;
@@ -296,11 +307,37 @@ void generarReporteUsuarios(const Usuario usuarios[], int cantidad) {
     }
 }
 
+void verUltimoReporte(void) {
+    char ruta[CAPACIDAD_RUTA];
+    cadena linea;
+    FILE *archivo;
+
+    if (obtenerCarpetaReportes(ruta)) {
+        strcat(ruta, "\\" ARCHIVO_REPORTE);
+        /* El modo "r" abre un archivo existente para leerlo. */
+        archivo = fopen(ruta, "r");
+        if (archivo != NULL) {
+            /* fgets devuelve NULL cuando ya no puede leer otra linea. */
+            while (fgets(linea, sizeof linea, archivo) != NULL) {
+                printf("%s", linea);
+            }
+            if (ferror(archivo)) {
+                puts("No se pudo completar la lectura del reporte.");
+            }
+            fclose(archivo);
+        } else {
+            puts("No se pudo abrir el ultimo reporte. Genere uno con la opcion 6.");
+        }
+    } else {
+        puts("No se pudo obtener la carpeta de reportes.");
+    }
+}
+
 void mostrarMenu(void) {
     puts("\n--- Usuarios ---");
     printf("%d. Alta\n%d. Listado\n%d. Consulta\n%d. Modificacion\n"
-           "%d. Baja\n%d. Generar reporte de usuarios\n%d. Salir\n", ALTA, LISTADO, CONSULTA,
-           MODIFICACION, BAJA, REPORTE, SALIR);
+           "%d. Baja\n%d. Generar reporte de usuarios\n%d. Ver ultimo reporte\n%d. Salir\n",
+           ALTA, LISTADO, CONSULTA, MODIFICACION, BAJA, REPORTE, VER_REPORTE, SALIR);
 }
 
 int main(void) {
@@ -310,7 +347,7 @@ int main(void) {
 
     do {
         mostrarMenu();
-        opcion = leerEnteroEntre(SALIR, REPORTE, "Opcion");
+        opcion = leerEnteroEntre(SALIR, VER_REPORTE, "Opcion");
         switch (opcion) {
             case ALTA:
                 agregarUsuario(usuarios, &cantidad);
@@ -329,6 +366,9 @@ int main(void) {
                 break;
             case REPORTE:
                 generarReporteUsuarios(usuarios, cantidad);
+                break;
+            case VER_REPORTE:
+                verUltimoReporte();
                 break;
         }
     } while (opcion != SALIR);
