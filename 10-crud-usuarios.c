@@ -33,7 +33,11 @@ typedef struct {
 #define VER_REPORTE 7
 #define CARPETA_REPORTES "reportes"
 #define ARCHIVO_REPORTE "usuarios-por-tipo.txt"
-#define CAPACIDAD_RUTA (MAX_PATH + sizeof(CARPETA_REPORTES) + sizeof(ARCHIVO_REPORTE) + 2)
+#define CARPETA_DATOS "data"
+#define ARCHIVO_DATOS "usuarios.dat"
+/* Espacio para la ruta del ejecutable, la carpeta y el nombre del archivo. */
+#define CAPACIDAD_RUTA (MAX_PATH + sizeof(CARPETA_REPORTES) + sizeof(ARCHIVO_REPORTE) + \
+                        sizeof(CARPETA_DATOS) + sizeof(ARCHIVO_DATOS) + 4)
 
 /* Descarta el resto de una linea para no contaminar la siguiente lectura. */
 void descartarRestoDeLinea(void) {
@@ -44,15 +48,23 @@ void descartarRestoDeLinea(void) {
 }
 
 /* Funciones del catalogo utilizadas en este ejemplo. */
-int leerEntero(cadena mensaje) {
-    int numero;
-    printf("%s: ", mensaje);
-    scanf("%d", &numero);
-    descartarRestoDeLinea();
+int leerEntero(const char mensaje[]) {
+    int numero = 0;
+    int lecturaCorrecta;
+
+    do {
+        printf("%s: ", mensaje);
+        lecturaCorrecta = scanf("%d", &numero) == 1;
+        descartarRestoDeLinea();
+        if (!lecturaCorrecta) {
+            puts("Error. Ingrese un numero entero.");
+        }
+    } while (!lecturaCorrecta);
+
     return numero;
 }
 
-int leerEnteroEntre(int valorMin, int valorMax, cadena mensaje) {
+int leerEnteroEntre(int valorMin, int valorMax, const char mensaje[]) {
     int numero = leerEntero(mensaje);
     while (numero < valorMin || numero > valorMax) {
         printf("Error. Se esperaba un entero entre %d y %d.\n", valorMin, valorMax);
@@ -61,7 +73,7 @@ int leerEnteroEntre(int valorMin, int valorMax, cadena mensaje) {
     return numero;
 }
 
-void leerCadena(cadena mensaje, cadena target) {
+void leerCadena(const char mensaje[], cadena target) {
     printf("%s: ", mensaje);
     fgets(target, sizeof(cadena), stdin);
     if (strchr(target, '\n') == NULL) {
@@ -70,7 +82,7 @@ void leerCadena(cadena mensaje, cadena target) {
     target[strcspn(target, "\r\n")] = '\0';
 }
 
-void leerCadenaEntre(int minLength, int maxLength, cadena mensaje, cadena target) {
+void leerCadenaEntre(int minLength, int maxLength, const char mensaje[], cadena target) {
     leerCadena(mensaje, target);
     while (strlen(target) < (size_t) minLength || strlen(target) > (size_t) maxLength) {
         printf("Error. Se esperaba una cadena de entre %d y %d caracteres.\n",
@@ -234,8 +246,13 @@ int contarUsuariosPorTipo(const Usuario usuarios[], int cantidad, const char tip
     return cantidadPorTipo;
 }
 
-/* En Windows, obtiene la carpeta del .exe aunque se ejecute desde otra carpeta. */
-int obtenerCarpetaReportes(char ruta[]) {
+/* ================================================================
+   CARPETAS Y RUTAS
+   Se utiliza la carpeta donde esta el ejecutable (Windows).
+   Esta misma logica sirve tanto para "data" como para "reportes".
+   ================================================================ */
+
+int obtenerCarpeta(const char nombreCarpeta[], char ruta[]) {
     char *ultimaBarra;
     DWORD longitud = GetModuleFileNameA(NULL, ruta, MAX_PATH);
     int obtenida = 0;
@@ -244,7 +261,7 @@ int obtenerCarpetaReportes(char ruta[]) {
         ultimaBarra = strrchr(ruta, '\\');
         if (ultimaBarra != NULL) {
             ultimaBarra[1] = '\0';
-            strcat(ruta, CARPETA_REPORTES);
+            strcat(ruta, nombreCarpeta);
             obtenida = 1;
         }
     }
@@ -252,16 +269,142 @@ int obtenerCarpetaReportes(char ruta[]) {
     return obtenida;
 }
 
-int prepararCarpetaReportes(char ruta[]) {
-    int creada = 0;
+/* Si la carpeta ya existe, no se considera un error. */
+int prepararCarpeta(const char nombreCarpeta[], char ruta[]) {
+    int preparada = 0;
 
-    if (obtenerCarpetaReportes(ruta)) {
-        /* Si la carpeta ya existe, tambien podemos usarla. */
-        creada = _mkdir(ruta) == 0 || errno == EEXIST;
+    if (obtenerCarpeta(nombreCarpeta, ruta)) {
+        preparada = _mkdir(ruta) == 0 || errno == EEXIST;
     }
 
-    return creada;
+    return preparada;
 }
+
+/* ================================================================
+   PERSISTENCIA BINARIA
+
+   Formato de usuarios.dat:
+   [cantidad (int)] [Usuario 1] [Usuario 2] ... [Usuario N]
+
+   El archivo guarda primero cuantos usuarios hay. A continuacion
+   guarda esa cantidad de estructuras Usuario completas.
+   ================================================================ */
+
+/* Lee los datos del archivo YA ABIERTO. Devuelve 1 si todo salio bien. */
+int leerUsuariosBinarios(FILE *archivo, Usuario usuarios[], int *cantidad) {
+    int cantidadLeida = 0;
+    int lecturaCorrecta = 0;
+    int caracterExtra;
+
+    /* Primero recuperamos la cantidad que se guardo. */
+    if (fread(&cantidadLeida, sizeof(int), 1, archivo) == 1) {
+        /* Nunca debemos intentar cargar mas usuarios que los permitidos. */
+        if (cantidadLeida >= 0 && cantidadLeida <= MAX_USUARIOS) {
+            /* fread devuelve la cantidad de elementos leidos, no sus bytes. */
+            if (fread(usuarios, sizeof(Usuario), cantidadLeida, archivo)
+                == (size_t) cantidadLeida) {
+                /* Comprobamos que no sobren bytes ni haya errores de lectura. */
+                caracterExtra = fgetc(archivo);
+                if (caracterExtra == EOF && !ferror(archivo)) {
+                    *cantidad = cantidadLeida;
+                    lecturaCorrecta = 1;
+                }
+            }
+        }
+    }
+
+    return lecturaCorrecta;
+}
+
+/* Al comenzar, si todavia no existe usuarios.dat, se inicia vacio. */
+int cargarUsuarios(Usuario usuarios[], int *cantidad) {
+    char ruta[CAPACIDAD_RUTA];
+    FILE *archivo;
+    int cargaCorrecta = 1;
+    int cierreCorrecto;
+
+    *cantidad = 0;
+
+    if (obtenerCarpeta(CARPETA_DATOS, ruta)) {
+        strcat(ruta, "\\" ARCHIVO_DATOS);
+        archivo = fopen(ruta, "rb");  /* r = lectura; b = binario */
+
+        if (archivo != NULL) {
+            cargaCorrecta = leerUsuariosBinarios(archivo, usuarios, cantidad);
+            cierreCorrecto = fclose(archivo) == 0;
+            cargaCorrecta = cargaCorrecta && cierreCorrecto;
+
+            if (cargaCorrecta) {
+                printf("Usuarios cargados desde el archivo: %d.\n", *cantidad);
+            } else {
+                *cantidad = 0;
+                puts("Error: no se pudieron recuperar correctamente los usuarios.");
+            }
+        } else if (errno == ENOENT) {
+            puts("No existe usuarios.dat. Se comenzara con el listado vacio.");
+        } else {
+            cargaCorrecta = 0;
+            puts("Error: no se pudo abrir usuarios.dat para lectura.");
+        }
+    } else {
+        cargaCorrecta = 0;
+        puts("Error: no se pudo obtener la carpeta de datos.");
+    }
+
+    return cargaCorrecta;
+}
+
+/* Escribe los datos en el archivo YA ABIERTO. */
+int escribirUsuariosBinarios(FILE *archivo, const Usuario usuarios[], int cantidad) {
+    int escrituraCorrecta;
+
+    /* Primero guardamos cuantos usuarios debera leer la proxima ejecucion. */
+    escrituraCorrecta = fwrite(&cantidad, sizeof(int), 1, archivo) == 1;
+
+    /* Si hay usuarios, guardamos sus estructuras consecutivamente. */
+    if (escrituraCorrecta && cantidad > 0) {
+        escrituraCorrecta = fwrite(usuarios, sizeof(Usuario), cantidad, archivo)
+                            == (size_t) cantidad;
+    }
+
+    return escrituraCorrecta;
+}
+
+/* Al elegir Salir, crea la carpeta data si hace falta y guarda todo. */
+int guardarUsuarios(const Usuario usuarios[], int cantidad) {
+    char ruta[CAPACIDAD_RUTA];
+    FILE *archivo;
+    int guardadoCorrecto = 0;
+    int escrituraCorrecta;
+    int cierreCorrecto;
+
+    if (prepararCarpeta(CARPETA_DATOS, ruta)) {
+        strcat(ruta, "\\" ARCHIVO_DATOS);
+        archivo = fopen(ruta, "wb"); /* w = crea o reemplaza; b = binario */
+
+        if (archivo != NULL) {
+            escrituraCorrecta = escribirUsuariosBinarios(archivo, usuarios, cantidad);
+            cierreCorrecto = fclose(archivo) == 0;
+            guardadoCorrecto = escrituraCorrecta && cierreCorrecto;
+
+            if (guardadoCorrecto) {
+                printf("Usuarios guardados: %d. Archivo: %s\n", cantidad, ruta);
+            } else {
+                puts("Error: no se pudo completar la escritura de usuarios.dat.");
+            }
+        } else {
+            puts("Error: no se pudo abrir usuarios.dat para escritura.");
+        }
+    } else {
+        puts("Error: no se pudo crear o acceder a la carpeta data.");
+    }
+
+    return guardadoCorrecto;
+}
+
+/* ================================================================
+   REPORTES DE TEXTO (funcionalidad original del programa)
+   ================================================================ */
 
 int escribirReporteUsuarios(FILE *archivo, const Usuario usuarios[], int cantidad) {
     int cantidadStd = contarUsuariosPorTipo(usuarios, cantidad, TIPO_STD);
@@ -287,7 +430,7 @@ void generarReporteUsuarios(const Usuario usuarios[], int cantidad) {
     int escrito;
     int cerrado;
 
-    if (prepararCarpetaReportes(ruta)) {
+    if (prepararCarpeta(CARPETA_REPORTES, ruta)) {
         strcat(ruta, "\\" ARCHIVO_REPORTE);
         /* El modo "w" crea el archivo o reemplaza el reporte anterior. */
         archivo = fopen(ruta, "w");
@@ -312,7 +455,7 @@ void verUltimoReporte(void) {
     cadena linea;
     FILE *archivo;
 
-    if (obtenerCarpetaReportes(ruta)) {
+    if (obtenerCarpeta(CARPETA_REPORTES, ruta)) {
         strcat(ruta, "\\" ARCHIVO_REPORTE);
         /* El modo "r" abre un archivo existente para leerlo. */
         archivo = fopen(ruta, "r");
@@ -324,7 +467,9 @@ void verUltimoReporte(void) {
             if (ferror(archivo)) {
                 puts("No se pudo completar la lectura del reporte.");
             }
-            fclose(archivo);
+            if (fclose(archivo) != 0) {
+                puts("No se pudo cerrar correctamente el archivo de reporte.");
+            }
         } else {
             puts("No se pudo abrir el ultimo reporte. Genere uno con la opcion 6.");
         }
@@ -344,6 +489,13 @@ int main(void) {
     Usuario usuarios[MAX_USUARIOS];
     int cantidad = 0;
     int opcion;
+    int cargaCorrecta;
+
+    /* Una sola lectura al iniciar. El CRUD sigue trabajando en memoria RAM. */
+    cargaCorrecta = cargarUsuarios(usuarios, &cantidad);
+    if (!cargaCorrecta) {
+        puts("AVISO: no se guardaran cambios para evitar reemplazar un archivo ilegible.");
+    }
 
     do {
         mostrarMenu();
@@ -372,6 +524,15 @@ int main(void) {
                 break;
         }
     } while (opcion != SALIR);
+
+    /* Una sola escritura al salir, antes de terminar el programa. */
+    if (cargaCorrecta) {
+        if (!guardarUsuarios(usuarios, cantidad)) {
+            puts("ATENCION: los cambios de esta sesion no pudieron guardarse.");
+        }
+    } else {
+        puts("No se guardaron cambios porque la carga inicial habia fallado.");
+    }
 
     puts("Fin del programa.");
     return 0;
